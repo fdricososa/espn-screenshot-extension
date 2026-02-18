@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "ESPN Screenshot",
+  "version": "0.1.0",
+  "description": "Screenshot of ESPN match Statistics and Commentary.",
+  "permissions": ["tabs", "downloads", "activeTab"],
+  "host_permissions": ["https://www.espn.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "ESPN Capture",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
