@@ -8,6 +8,22 @@ function extractGameId(url) {
   return m ? m[1] : null;
 }
 
+//SELECT KEY EVENTS FROM COMENTARY SECTION
+function selectKeyEvents() {
+  const buttons = Array.from(document.querySelectorAll("button, a"));
+
+  const keyBtn = buttons.find(
+    el => el.innerText?.trim() === "Key Events"
+  );
+
+  if (!keyBtn) {
+    console.warn("Key Events button not found");
+    return;
+  }
+
+  keyBtn.click();
+}
+
 function buildUrls(gameId) {
   return {
     commentary: `https://www.espn.com/soccer/commentary/_/gameId/${gameId}`,
@@ -61,7 +77,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // 1) Commentary
     await loadUrlInTab(tabId, commentary);
     await waitForTabComplete(tabId);
-    await sleep(800); // let dynamic content settle a bit
+    await sleep(800);
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: selectKeyEvents
+    });
+    await sleep(500);
     const commShot = await captureVisible(tabId);
     await downloadDataUrl(commShot, `espn_${gameId}_commentary_${stamp}.png`);
 
