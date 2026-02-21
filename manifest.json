@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ESPN Screenshot",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Screenshot of ESPN match Statistics and Commentary.",
   "permissions": ["tabs", "downloads", "activeTab", "scripting"],
   "host_permissions": ["https://www.espn.com/*"],

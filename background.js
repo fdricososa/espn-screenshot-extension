@@ -1,10 +1,5 @@
-function blobToDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 //RUN FUNCTION IN CURRENT TAB
@@ -15,6 +10,75 @@ async function execInTab(tabId, func, args = []) {
     args,
   });
   return result;
+}
+
+function extractGameId(url) {
+  // ESPN URLs often contain ".../gameId/401850949" (your example)
+  const m = url.match(/gameId\/(\d+)/i);
+  return m ? m[1] : null;
+}
+
+function buildUrls(gameId) {
+  return {
+    commentary: `https://www.espn.com/soccer/commentary/_/gameId/${gameId}`,
+    stats: `https://www.espn.com/soccer/matchstats/_/gameId/${gameId}`
+  };
+}
+
+async function downloadDataUrl(dataUrl, filename) {
+  await chrome.downloads.download({
+    url: dataUrl,
+    filename,
+    saveAs: false
+  });
+}
+
+async function loadUrlInTab(tabId, url) {
+  await chrome.tabs.update(tabId, { url });
+}
+
+function blobToDataURL(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function waitForTabComplete(tabId, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === "complete") return;
+    await sleep(250);
+  }
+  throw new Error("Timeout waiting for page load.");
+}
+
+function enterCaptureModeHideSticky() {
+  const STYLE_ID = "__espn_hide_sticky__";
+  if (document.getElementById(STYLE_ID)) return;
+
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = `
+    /* Hide ESPN sticky match header */
+    .Gamestrip__StickyContainer, .Site__Header {
+      display: none !important;
+      position: static !important;
+      top: auto !important;
+      transform: none !important;
+      height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function exitCaptureModeHideSticky() {
+  document.getElementById("__espn_hide_sticky__")?.remove();
 }
 
 //LOCATOR FOR CONTAINERS
@@ -32,6 +96,22 @@ function locatePageLayoutMain() {
   };
 }
 
+//SELECT KEY EVENTS FROM COMENTARY SECTION
+function selectKeyEvents() {
+  const buttons = Array.from(document.querySelectorAll("button, a"));
+
+  const keyBtn = buttons.find(
+    el => el.innerText?.trim() === "Key Events"
+  );
+
+  if (!keyBtn) {
+    console.warn("Key Events button not found");
+    return;
+  }
+
+  keyBtn.click();
+}
+
 //GET MULTIPLE VIEWPORTS OF CONTAINERS
 async function captureSectionSlices(tabId, locateFn, opts = {}) {
   const {
@@ -40,6 +120,8 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
     maxSlices = 30,
     minIntervalBetweenCapturesMs = 650,
   } = opts;
+
+  await execInTab(tabId, enterCaptureModeHideSticky);
 
   const info = await execInTab(tabId, locateFn);
   if (!info) throw new Error("Section not found (locator returned null).");
@@ -60,33 +142,36 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
   let dy = 0;
   let lastCaptureAt = 0;
 
-  for (let i = 0; i < slicesNeeded; i++) {
-    const y = startY + dy;
+  try {
+    for (let i = 0; i < slicesNeeded; i++) {
+      const y = startY + dy;
 
-    // scroll window
-    await execInTab(tabId, (yy) => window.scrollTo(0, yy), [y]);
-    await sleep(settleMsAfterScroll);
+      // scroll window
+      await execInTab(tabId, (yy) => window.scrollTo(0, yy), [y]);
+      await sleep(settleMsAfterScroll);
 
-    // throttle (avoid quota)
-    const now = Date.now();
-    const waitMs = Math.max(
-      0,
-      minIntervalBetweenCapturesMs - (now - lastCaptureAt)
-    );
-    if (waitMs) await sleep(waitMs);
+      // throttle (avoid quota)
+      const now = Date.now();
+      const waitMs = Math.max(
+        0,
+        minIntervalBetweenCapturesMs - (now - lastCaptureAt)
+      );
+      if (waitMs) await sleep(waitMs);
 
-    // capture visible viewport
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: "png",
-    });
-    lastCaptureAt = Date.now();
+      // capture visible viewport
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+        format: "png",
+      });
+      lastCaptureAt = Date.now();
 
-    urls.push(dataUrl);
+      urls.push(dataUrl);
 
-    dy += viewportH;
-    if (dy >= totalH) break;
+      dy += viewportH;
+      if (dy >= totalH) break;
+    }
+  } finally {
+    await execInTab(tabId, exitCaptureModeHideSticky);
   }
-
   return urls;
 }
 
@@ -121,68 +206,6 @@ async function stitchSlices(slices) {
 async function captureSectionFull(tabId, locateFn) {
   const slices = await captureSectionSlices(tabId, locateFn);
   return await stitchSlices(slices);
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function extractGameId(url) {
-  // ESPN URLs often contain ".../gameId/401850949" (your example)
-  const m = url.match(/gameId\/(\d+)/i);
-  return m ? m[1] : null;
-}
-
-//SELECT KEY EVENTS FROM COMENTARY SECTION
-function selectKeyEvents() {
-  const buttons = Array.from(document.querySelectorAll("button, a"));
-
-  const keyBtn = buttons.find(
-    el => el.innerText?.trim() === "Key Events"
-  );
-
-  if (!keyBtn) {
-    console.warn("Key Events button not found");
-    return;
-  }
-
-  keyBtn.click();
-}
-
-function buildUrls(gameId) {
-  return {
-    commentary: `https://www.espn.com/soccer/commentary/_/gameId/${gameId}`,
-    stats: `https://www.espn.com/soccer/matchstats/_/gameId/${gameId}`
-  };
-}
-
-async function captureVisible(tabId) {
-  const tab = await chrome.tabs.get(tabId);
-  // captureVisibleTab requires windowId
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-  return dataUrl;
-}
-
-async function downloadDataUrl(dataUrl, filename) {
-  await chrome.downloads.download({
-    url: dataUrl,
-    filename,
-    saveAs: false
-  });
-}
-
-async function loadUrlInTab(tabId, url) {
-  await chrome.tabs.update(tabId, { url });
-}
-
-async function waitForTabComplete(tabId, timeoutMs = 15000) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const tab = await chrome.tabs.get(tabId);
-    if (tab.status === "complete") return;
-    await sleep(250);
-  }
-  throw new Error("Timeout waiting for page load.");
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
