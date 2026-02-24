@@ -12,8 +12,16 @@ async function execInTab(tabId, func, args = []) {
   return result;
 }
 
+async function settleScroll(tabId) {
+  await execInTab(tabId, async () => {
+    await new Promise((r) => requestAnimationFrame(r));
+    await new Promise((r) => requestAnimationFrame(r));
+    await new Promise((r) => setTimeout(r, 80));
+    return window.scrollY;
+  });
+}
+
 function extractGameId(url) {
-  // ESPN URLs often contain ".../gameId/401850949" (your example)
   const m = url.match(/gameId\/(\d+)/i);
   return m ? m[1] : null;
 }
@@ -132,15 +140,18 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
   const startY = Math.max(0, Math.floor(info.pageTop));
   const totalH = Math.max(1, Math.floor(info.height));
   const viewportH = Math.max(1, Math.floor(info.viewportH || 1));
+  const overlap = 80;
+  const step = Math.max(1, viewportH - overlap);
 
   await sleep(settleMsAfterLocate);
 
   const slicesNeeded = Math.min(maxSlices, Math.ceil(totalH / viewportH));
   const tab = await chrome.tabs.get(tabId);
 
-  const urls = [];
+  const slices = [];
   let dy = 0;
   let lastCaptureAt = 0;
+  let lastY = null;
 
   try {
     for (let i = 0; i < slicesNeeded; i++) {
@@ -149,6 +160,7 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
       // scroll window
       await execInTab(tabId, (yy) => window.scrollTo(0, yy), [y]);
       await sleep(settleMsAfterScroll);
+      await settleScroll(tabId);
 
       // throttle (avoid quota)
       const now = Date.now();
@@ -158,45 +170,77 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
       );
       if (waitMs) await sleep(waitMs);
 
+      // record REAL scrollY at capture time (the "truth" for overlap-free stitching)
+      const actualY = await execInTab(tabId, () => window.scrollY);
+      if (lastY !== null && Math.abs(actualY - lastY) < 1) break; // guard: avoid repeating same viewport forever
+      lastY = actualY;
+
       // capture visible viewport
       const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
         format: "png",
       });
       lastCaptureAt = Date.now();
 
-      urls.push(dataUrl);
+      slices.push({ dataUrl, y: actualY });
 
-      dy += viewportH;
+      dy += step;
       if (dy >= totalH) break;
     }
   } finally {
     await execInTab(tabId, exitCaptureModeHideSticky);
   }
-  return urls;
+  return { slices, startY, totalH, viewportH };
 }
 
 //STITCH SLICES INTO ONE PNG
-async function stitchSlices(slices) {
+async function stitchSlices(payload) {
+const { slices, startY, totalH, viewportH } = payload || {};
   if (!slices || slices.length === 0) throw new Error("No slices to stitch");
 
-  // Decode all slices to bitmaps
+  // Decode to bitmaps
   const bitmaps = [];
   for (const s of slices) {
-    const blob = await (await fetch(s)).blob();
-    const bmp = await createImageBitmap(blob);
-    bitmaps.push(bmp);
+    const blob = await (await fetch(s.dataUrl)).blob();
+    bitmaps.push(await createImageBitmap(blob));
   }
 
+  // CSS px -> image px scale (captureVisibleTab returns device pixels)
+  const scale = bitmaps[0].height / viewportH;
   const width = bitmaps[0].width;
-  const totalHeight = bitmaps.reduce((sum, bmp) => sum + bmp.height, 0);
+  const outH = Math.max(1, Math.round(totalH * scale));
 
-  const canvas = new OffscreenCanvas(width, totalHeight);
+  const canvas = new OffscreenCanvas(width, outH);
   const ctx = canvas.getContext("2d");
 
-  let y = 0;
-  for (const bmp of bitmaps) {
-    ctx.drawImage(bmp, 0, y);
-    y += bmp.height;
+  let prevBottom = 0;
+  for (let i = 0; i < bitmaps.length; i++) {
+    const bmp = bitmaps[i];
+    const sliceY = slices[i].y;
+
+    // Where this viewport starts inside the section (in image px)
+    let destY = Math.round((sliceY - startY) * scale);
+
+    // Crop anything above section top
+    let cropTop = 0;
+    if (destY < 0) {
+      cropTop = -destY;
+      destY = 0;
+    }
+
+    // Remove overlap with previous slice
+    if (destY < prevBottom) {
+      cropTop += (prevBottom - destY);
+      destY = prevBottom;
+    }
+
+    if (destY >= outH) break;
+    const remaining = outH - destY;
+    const available = bmp.height - cropTop;
+    const drawH = Math.min(remaining, available);
+    if (drawH <= 0) continue;
+
+    ctx.drawImage(bmp, 0, cropTop, width, drawH, 0, destY, width, drawH);
+    prevBottom = destY + drawH;
   }
 
   const outBlob = await canvas.convertToBlob({ type: "image/png" });
@@ -204,8 +248,8 @@ async function stitchSlices(slices) {
 }
 
 async function captureSectionFull(tabId, locateFn) {
-  const slices = await captureSectionSlices(tabId, locateFn);
-  return await stitchSlices(slices);
+  const payload = await captureSectionSlices(tabId, locateFn);
+  return await stitchSlices(payload);
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
