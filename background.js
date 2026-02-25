@@ -91,8 +91,8 @@ function exitCaptureModeHideSticky() {
 }
 
 //LOCATOR FOR CONTAINERS
-function locatePageLayoutMain() {
-  const el = document.querySelector(".PageLayout__Main");
+function locateLayout(desiredSection) {
+  const el = document.querySelector(desiredSection);
   if (!el) return null;
 
   el.scrollIntoView({ block: "start" });
@@ -122,7 +122,7 @@ function selectKeyEvents() {
 }
 
 //GET MULTIPLE VIEWPORTS OF CONTAINERS
-async function captureSectionSlices(tabId, locateFn, opts = {}) {
+async function captureSectionSlices(tabId, locateFn, opts = {}, args = []) {
   const {
     settleMsAfterLocate = 250,
     settleMsAfterScroll = 450,
@@ -132,7 +132,7 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
 
   await execInTab(tabId, enterCaptureModeHideSticky);
 
-  const info = await execInTab(tabId, locateFn);
+  const info = await execInTab(tabId, locateFn, args);
   if (!info) throw new Error("Section not found (locator returned null).");
   if (typeof info.pageTop !== "number" || typeof info.height !== "number") {
     throw new Error("Locator must return { pageTop, height, viewportH }");
@@ -146,7 +146,7 @@ async function captureSectionSlices(tabId, locateFn, opts = {}) {
 
   await sleep(settleMsAfterLocate);
 
-  const slicesNeeded = Math.min(maxSlices, Math.ceil(totalH / viewportH));
+  const slicesNeeded = Math.min(maxSlices, Math.ceil(totalH / step));
   const tab = await chrome.tabs.get(tabId);
 
   const slices = [];
@@ -248,8 +248,8 @@ const { slices, startY, totalH, viewportH } = payload || {};
   return await blobToDataURL(outBlob);
 }
 
-async function captureSectionFull(tabId, locateFn) {
-  const payload = await captureSectionSlices(tabId, locateFn);
+async function captureSectionFull(tabId, locateFn, args = [], opts = {}) {
+  const payload = await captureSectionSlices(tabId, locateFn, opts, args);
   return await stitchSlices(payload);
 }
 
@@ -310,19 +310,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       func: selectKeyEvents
     });
     await sleep(500);
-    const commShot = await captureSectionFull(tabId, locatePageLayoutMain);
+    //const commentarySection = await execInTab(tabId, locateLayout, [".PageLayout__Main"]);
+    const commShot = await captureSectionFull(
+      tabId,
+      locateLayout,
+      [".PageLayout__Main"]
+    );
 
     // 2) Stats
     await loadUrlInTab(tabId, stats);
     await waitForTabComplete(tabId);
     await sleep(800);
-    const statsShot = await captureSectionFull(tabId, locatePageLayoutMain);
+    //const statsSection = await execInTab(tabId, locateLayout, ["[data-tes]id='prism-LayoutCard']"]);
+    const statsShot = await captureSectionFull(
+      tabId,
+      locateLayout,
+      ["[data-testid='prism-LayoutCard']"]
+    );
 
     // 3) Lineups
     await loadUrlInTab(tabId, lineups);
     await waitForTabComplete(tabId);
     await sleep(800);
-    const lineShot = await captureSectionFull(tabId, locatePageLayoutMain);
+    //const lineSection = await execInTab(tabId, locateLayout, [".LineUps__BothTeams"]);
+    const lineShot = await captureSectionFull(
+      tabId,
+      locateLayout,
+      [".LineUps__BothTeams"]
+    );
 
     const unified = await combineImagesVertical([commShot, statsShot, lineShot]);
     await downloadDataUrl(unified, `espn_${gameId}_${stamp}.png`);
