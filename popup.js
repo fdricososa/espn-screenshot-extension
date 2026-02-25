@@ -15,7 +15,7 @@ btn.addEventListener("click", async () => {
   }
 
   chrome.runtime.sendMessage(
-    { type: "CAPTURE_BOTH", tabId: tab.id, url: tab.url },
+    { type: "CAPTURE_MATCH", tabId: tab.id, url: tab.url },
     (resp) => {
       if (chrome.runtime.lastError) {
         setStatus("Error: " + chrome.runtime.lastError.message);

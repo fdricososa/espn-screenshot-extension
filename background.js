@@ -29,7 +29,8 @@ function extractGameId(url) {
 function buildUrls(gameId) {
   return {
     commentary: `https://www.espn.com/soccer/commentary/_/gameId/${gameId}`,
-    stats: `https://www.espn.com/soccer/matchstats/_/gameId/${gameId}`
+    stats: `https://www.espn.com/soccer/matchstats/_/gameId/${gameId}`,
+    lineups: `https://www.espn.com/soccer/lineups/_/gameId/${gameId}`
   };
 }
 
@@ -254,7 +255,7 @@ async function captureSectionFull(tabId, locateFn) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
-    if (msg?.type !== "CAPTURE_BOTH") return;
+    if (msg?.type !== "CAPTURE_MATCH") return;
 
     const { tabId, url } = msg;
     const gameId = extractGameId(url);
@@ -263,7 +264,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
-    const { commentary, stats } = buildUrls(gameId);
+    const { commentary, stats, lineups } = buildUrls(gameId);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 
     // 1) Commentary
@@ -284,6 +285,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     await sleep(800);
     const statsShot = await captureSectionFull(tabId, locatePageLayoutMain);
     await downloadDataUrl(statsShot, `espn_${gameId}_stats_${stamp}.png`);
+
+    // 3) Lineups
+    await loadUrlInTab(tabId, lineups);
+    await waitForTabComplete(tabId);
+    await sleep(800);
+    const lineShot = await captureSectionFull(tabId, locatePageLayoutMain);
+    await downloadDataUrl(lineShot, `espn_${gameId}_lineups_${stamp}.png`);
 
     sendResponse({ ok: true });
   })().catch((e) => {
