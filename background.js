@@ -253,6 +253,40 @@ async function captureSectionFull(tabId, locateFn) {
   return await stitchSlices(payload);
 }
 
+async function combineImagesVertical(dataUrls) {
+  const gapPx = 0; // space between images
+
+  // decode a bitmaps
+  const bitmaps = [];
+  for (const u of dataUrls) {
+    const blob = await (await fetch(u)).blob();
+    bitmaps.push(await createImageBitmap(blob));
+  }
+
+  const targetWidth = Math.max(...bitmaps.map(b => b.width));
+
+  // compute total height (with scaling to targetWidth)
+  const scaledHeights = bitmaps.map(b => Math.round(b.height * (targetWidth / b.width)));
+  const totalHeight = scaledHeights.reduce((a, b) => a + b, 0) + gapPx * (bitmaps.length - 1);
+
+  const canvas = new OffscreenCanvas(targetWidth, totalHeight);
+  const ctx = canvas.getContext("2d");
+
+  let y = 0;
+  for (let i = 0; i < bitmaps.length; i++) {
+    const bmp = bitmaps[i];
+    const h = scaledHeights[i];
+
+    ctx.drawImage(bmp, 0, y, targetWidth, h);
+    y += h;
+
+    if (i < bitmaps.length - 1) y += gapPx;
+  }
+
+  const outBlob = await canvas.convertToBlob({ type: "image/png" });
+  return await blobToDataURL(outBlob);
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg?.type !== "CAPTURE_MATCH") return;
@@ -277,21 +311,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     await sleep(500);
     const commShot = await captureSectionFull(tabId, locatePageLayoutMain);
-    await downloadDataUrl(commShot, `espn_${gameId}_commentary_${stamp}.png`);
 
     // 2) Stats
     await loadUrlInTab(tabId, stats);
     await waitForTabComplete(tabId);
     await sleep(800);
     const statsShot = await captureSectionFull(tabId, locatePageLayoutMain);
-    await downloadDataUrl(statsShot, `espn_${gameId}_stats_${stamp}.png`);
 
     // 3) Lineups
     await loadUrlInTab(tabId, lineups);
     await waitForTabComplete(tabId);
     await sleep(800);
     const lineShot = await captureSectionFull(tabId, locatePageLayoutMain);
-    await downloadDataUrl(lineShot, `espn_${gameId}_lineups_${stamp}.png`);
+
+    const unified = await combineImagesVertical([commShot, statsShot, lineShot]);
+    await downloadDataUrl(unified, `espn_${gameId}_${stamp}.png`);
 
     sendResponse({ ok: true });
   })().catch((e) => {
