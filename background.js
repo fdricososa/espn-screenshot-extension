@@ -1,3 +1,5 @@
+const timeBetweenNav = 600;
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -60,7 +62,7 @@ async function waitForTabComplete(tabId, timeoutMs = 15000) {
   while (Date.now() - start < timeoutMs) {
     const tab = await chrome.tabs.get(tabId);
     if (tab.status === "complete") return;
-    await sleep(250);
+    await sleep(200);
   }
   throw new Error("Timeout waiting for page load.");
 }
@@ -86,8 +88,34 @@ function enterCaptureModeHideSticky() {
   document.head.appendChild(style);
 }
 
+function enterCaptureModeForGamestrip() {
+  const STYLE_ID = "__espn_hide_sticky__aux";
+  if (document.getElementById(STYLE_ID)) return;
+
+  const style = document.createElement("style");
+  style.id = STYLE_ID;
+  style.textContent = `
+    /* Hide ESPN sticky match header */
+    .Site__Header {
+      display: none !important;
+      position: static !important;
+      top: auto !important;
+      transform: none !important;
+      height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+    .Gamestrip__StickyContainer {
+      top: 0 !important;
+      --gamepackage-layout-sticky-offset: 0 !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 function exitCaptureModeHideSticky() {
   document.getElementById("__espn_hide_sticky__")?.remove();
+  document.getElementById("__espn_hide_sticky__aux")?.remove();
 }
 
 //LOCATOR FOR CONTAINERS
@@ -124,13 +152,11 @@ function selectKeyEvents() {
 //GET MULTIPLE VIEWPORTS OF CONTAINERS
 async function captureSectionSlices(tabId, locateFn, opts = {}, args = []) {
   const {
-    settleMsAfterLocate = 250,
-    settleMsAfterScroll = 450,
+    settleMsAfterLocate = 150,
+    settleMsAfterScroll = 250,
     maxSlices = 30,
-    minIntervalBetweenCapturesMs = 650,
+    minIntervalBetweenCapturesMs = 450,
   } = opts;
-
-  await execInTab(tabId, enterCaptureModeHideSticky);
 
   const info = await execInTab(tabId, locateFn, args);
   if (!info) throw new Error("Section not found (locator returned null).");
@@ -154,41 +180,37 @@ async function captureSectionSlices(tabId, locateFn, opts = {}, args = []) {
   let lastCaptureAt = 0;
   let lastY = null;
 
-  try {
-    for (let i = 0; i < slicesNeeded; i++) {
-      const y = startY + dy;
+  for (let i = 0; i < slicesNeeded; i++) {
+    const y = startY + dy;
 
-      // scroll window
-      await execInTab(tabId, (yy) => window.scrollTo(0, yy), [y]);
-      await sleep(settleMsAfterScroll);
-      await settleScroll(tabId);
+    // scroll window
+    await execInTab(tabId, (yy) => window.scrollTo(0, yy), [y]);
+    await sleep(settleMsAfterScroll);
+    await settleScroll(tabId);
 
-      // throttle (avoid quota)
-      const now = Date.now();
-      const waitMs = Math.max(
-        0,
-        minIntervalBetweenCapturesMs - (now - lastCaptureAt)
-      );
-      if (waitMs) await sleep(waitMs);
+    // throttle (avoid quota)
+    const now = Date.now();
+    const waitMs = Math.max(
+      0,
+      minIntervalBetweenCapturesMs - (now - lastCaptureAt)
+    );
+    if (waitMs) await sleep(waitMs);
 
-      // record REAL scrollY at capture time (the "truth" for overlap-free stitching)
-      const actualY = await execInTab(tabId, () => window.scrollY);
-      if (lastY !== null && Math.abs(actualY - lastY) < 1) break; // guard: avoid repeating same viewport forever
-      lastY = actualY;
+    // record REAL scrollY at capture time (the "truth" for overlap-free stitching)
+    const actualY = await execInTab(tabId, () => window.scrollY);
+    if (lastY !== null && Math.abs(actualY - lastY) < 1) break; // guard: avoid repeating same viewport forever
+    lastY = actualY;
 
-      // capture visible viewport
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-        format: "png",
-      });
-      lastCaptureAt = Date.now();
+    // capture visible viewport
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: "png",
+    });
+    lastCaptureAt = Date.now();
 
-      slices.push({ dataUrl, y: actualY });
+    slices.push({ dataUrl, y: actualY });
 
-      dy += step;
-      if (dy >= totalH) break;
-    }
-  } finally {
-    await execInTab(tabId, exitCaptureModeHideSticky);
+    dy += step;
+    if (dy >= totalH) break;
   }
   return { slices, startY, totalH, viewportH };
 }
@@ -254,8 +276,6 @@ async function captureSectionFull(tabId, locateFn, args = [], opts = {}) {
 }
 
 async function combineImagesVertical(dataUrls) {
-  const gapPx = 0; // space between images
-
   // decode a bitmaps
   const bitmaps = [];
   for (const u of dataUrls) {
@@ -267,7 +287,7 @@ async function combineImagesVertical(dataUrls) {
 
   // compute total height (with scaling to targetWidth)
   const scaledHeights = bitmaps.map(b => Math.round(b.height * (targetWidth / b.width)));
-  const totalHeight = scaledHeights.reduce((a, b) => a + b, 0) + gapPx * (bitmaps.length - 1);
+  const totalHeight = scaledHeights.reduce((a, b) => a + b, 0) + (bitmaps.length - 1);
 
   const canvas = new OffscreenCanvas(targetWidth, totalHeight);
   const ctx = canvas.getContext("2d");
@@ -279,8 +299,6 @@ async function combineImagesVertical(dataUrls) {
 
     ctx.drawImage(bmp, 0, y, targetWidth, h);
     y += h;
-
-    if (i < bitmaps.length - 1) y += gapPx;
   }
 
   const outBlob = await canvas.convertToBlob({ type: "image/png" });
@@ -301,45 +319,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const { commentary, stats, lineups } = buildUrls(gameId);
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 
-    // 1) Commentary
+    // 1) Gamestrip
     await loadUrlInTab(tabId, commentary);
     await waitForTabComplete(tabId);
-    await sleep(800);
+    await sleep(timeBetweenNav);
+    await execInTab(tabId, enterCaptureModeForGamestrip);
+    const gameShot = await captureSectionFull(
+      tabId,
+      locateLayout,
+      [".Gamestrip__StickyContainer"]
+    );
+
+    // 2) Commentary
+    await execInTab(tabId, enterCaptureModeHideSticky);
     await chrome.scripting.executeScript({
       target: { tabId },
       func: selectKeyEvents
     });
     await sleep(500);
-    //const commentarySection = await execInTab(tabId, locateLayout, [".PageLayout__Main"]);
     const commShot = await captureSectionFull(
       tabId,
       locateLayout,
       [".PageLayout__Main"]
     );
 
-    // 2) Stats
+    // 3) Stats
     await loadUrlInTab(tabId, stats);
     await waitForTabComplete(tabId);
-    await sleep(800);
-    //const statsSection = await execInTab(tabId, locateLayout, ["[data-tes]id='prism-LayoutCard']"]);
+    await sleep(timeBetweenNav);
+    await execInTab(tabId, enterCaptureModeHideSticky);
     const statsShot = await captureSectionFull(
       tabId,
       locateLayout,
       ["[data-testid='prism-LayoutCard']"]
     );
 
-    // 3) Lineups
+    // 4) Lineups
     await loadUrlInTab(tabId, lineups);
     await waitForTabComplete(tabId);
-    await sleep(800);
-    //const lineSection = await execInTab(tabId, locateLayout, [".LineUps__BothTeams"]);
+    await sleep(timeBetweenNav);
+    await execInTab(tabId, enterCaptureModeHideSticky);
     const lineShot = await captureSectionFull(
       tabId,
       locateLayout,
       [".LineUps__BothTeams"]
     );
 
-    const unified = await combineImagesVertical([commShot, statsShot, lineShot]);
+    await execInTab(tabId, exitCaptureModeHideSticky);
+    const unified = await combineImagesVertical([gameShot, commShot, statsShot, lineShot]);
     await downloadDataUrl(unified, `espn_${gameId}_${stamp}.png`);
 
     sendResponse({ ok: true });
