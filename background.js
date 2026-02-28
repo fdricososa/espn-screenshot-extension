@@ -4,6 +4,14 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function setStatus(msg) {
+  chrome.runtime.sendMessage({
+    type: "STATUS_UPDATE",
+    message: msg
+  });
+}
+
+
 //RUN FUNCTION IN CURRENT TAB
 async function execInTab(tabId, func, args = []) {
   const [{ result }] = await chrome.scripting.executeScript({
@@ -309,7 +317,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (msg?.type !== "CAPTURE_MATCH") return;
 
-    const { tabId, url } = msg;
+    const { tabId, url, statusBox } = msg;
     const gameId = extractGameId(url);
     if (!gameId) {
       sendResponse({ ok: false, error: "No gameId found in current URL." });
@@ -324,6 +332,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     await waitForTabComplete(tabId);
     await sleep(timeBetweenNav);
     await execInTab(tabId, enterCaptureModeForGamestrip);
+    setStatus("Capture in process... 1/4.");
+
     const gameShot = await captureSectionFull(
       tabId,
       locateLayout,
@@ -337,6 +347,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       func: selectKeyEvents
     });
     await sleep(500);
+    setStatus("Capture in process... 2/4.");
     const commShot = await captureSectionFull(
       tabId,
       locateLayout,
@@ -348,6 +359,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     await waitForTabComplete(tabId);
     await sleep(timeBetweenNav);
     await execInTab(tabId, enterCaptureModeHideSticky);
+    setStatus("Capture in process... 3/4.");
     const statsShot = await captureSectionFull(
       tabId,
       locateLayout,
@@ -359,6 +371,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     await waitForTabComplete(tabId);
     await sleep(timeBetweenNav);
     await execInTab(tabId, enterCaptureModeHideSticky);
+    setStatus("Capture in process... 4/4.");
     const lineShot = await captureSectionFull(
       tabId,
       locateLayout,
