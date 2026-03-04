@@ -11,6 +11,9 @@ function setStatus(msg) {
   });
 }
 
+function makeToken() {
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
 //RUN FUNCTION IN CURRENT TAB
 async function execInTab(tabId, func, args = []) {
@@ -42,14 +45,6 @@ function buildUrls(gameId) {
     stats: `https://www.espn.com/soccer/matchstats/_/gameId/${gameId}`,
     lineups: `https://www.espn.com/soccer/lineups/_/gameId/${gameId}`
   };
-}
-
-async function downloadDataUrl(dataUrl, filename) {
-  await chrome.downloads.download({
-    url: dataUrl,
-    filename,
-    saveAs: false
-  });
 }
 
 async function loadUrlInTab(tabId, url) {
@@ -284,7 +279,6 @@ async function captureSectionFull(tabId, locateFn, args = [], opts = {}) {
 }
 
 async function combineImagesVertical(dataUrls) {
-  // decode a bitmaps
   const bitmaps = [];
   for (const u of dataUrls) {
     const blob = await (await fetch(u)).blob();
@@ -293,7 +287,6 @@ async function combineImagesVertical(dataUrls) {
 
   const targetWidth = Math.max(...bitmaps.map(b => b.width));
 
-  // compute total height (with scaling to targetWidth)
   const scaledHeights = bitmaps.map(b => Math.round(b.height * (targetWidth / b.width)));
   const totalHeight = scaledHeights.reduce((a, b) => a + b, 0) + (bitmaps.length - 1);
 
@@ -313,82 +306,99 @@ async function combineImagesVertical(dataUrls) {
   return await blobToDataURL(outBlob);
 }
 
+async function openViewerWithImage(dataUrl, title = "ESPN Capture") {
+  const token = makeToken();
+
+  await chrome.storage.session.set({
+    [token]: { dataUrl, title, createdAt: Date.now() }
+  });
+
+  const url = chrome.runtime.getURL(`viewer.html?token=${encodeURIComponent(token)}`);
+  await chrome.tabs.create({ url });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
-    if (msg?.type !== "CAPTURE_MATCH") return;
+    if (msg?.type === "CAPTURE_MATCH") {
+      const { tabId, url, statusBox } = msg;
+      const gameId = extractGameId(url);
+      if (!gameId) {
+        sendResponse({ ok: false, error: "No gameId found in current URL." });
+        return;
+      }
 
-    const { tabId, url, statusBox } = msg;
-    const gameId = extractGameId(url);
-    if (!gameId) {
-      sendResponse({ ok: false, error: "No gameId found in current URL." });
-      return;
+      const { commentary, stats, lineups } = buildUrls(gameId);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+      // 1) Gamestrip
+      await loadUrlInTab(tabId, commentary);
+      await waitForTabComplete(tabId);
+      await sleep(timeBetweenNav);
+      await execInTab(tabId, enterCaptureModeForGamestrip);
+      setStatus("Capture in process... 1/4.");
+
+      const gameShot = await captureSectionFull(
+        tabId,
+        locateLayout,
+        [".Gamestrip__StickyContainer"]
+      );
+
+      // 2) Commentary
+      await execInTab(tabId, enterCaptureModeHideSticky);
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        func: selectKeyEvents
+      });
+      await sleep(500);
+      setStatus("Capture in process... 2/4.");
+      const commShot = await captureSectionFull(
+        tabId,
+        locateLayout,
+        [".PageLayout__Main"]
+      );
+
+      // 3) Stats
+      await loadUrlInTab(tabId, stats);
+      await waitForTabComplete(tabId);
+      await sleep(timeBetweenNav);
+      await execInTab(tabId, enterCaptureModeHideSticky);
+      setStatus("Capture in process... 3/4.");
+      const statsShot = await captureSectionFull(
+        tabId,
+        locateLayout,
+        ["[data-testid='prism-LayoutCard']"]
+      );
+
+      // 4) Lineups
+      await loadUrlInTab(tabId, lineups);
+      await waitForTabComplete(tabId);
+      await sleep(timeBetweenNav);
+      await execInTab(tabId, enterCaptureModeHideSticky);
+      setStatus("Capture in process... 4/4.");
+      const lineShot = await captureSectionFull(
+        tabId,
+        locateLayout,
+        [".LineUps__BothTeams"]
+      );
+
+      await execInTab(tabId, exitCaptureModeHideSticky);
+      const unified = await combineImagesVertical([gameShot, commShot, statsShot, lineShot]);
+      openViewerWithImage(unified, `espn_${gameId}_${stamp}.png`);
+
+      sendResponse({ ok: true });
+    } else if (msg?.type === "SAVE_AS") {
+      chrome.downloads.download({
+        url: msg.dataUrl,
+        filename: msg.filename,
+        saveAs: true 
+      });
+    } else {
+      return
     }
-
-    const { commentary, stats, lineups } = buildUrls(gameId);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-
-    // 1) Gamestrip
-    await loadUrlInTab(tabId, commentary);
-    await waitForTabComplete(tabId);
-    await sleep(timeBetweenNav);
-    await execInTab(tabId, enterCaptureModeForGamestrip);
-    setStatus("Capture in process... 1/4.");
-
-    const gameShot = await captureSectionFull(
-      tabId,
-      locateLayout,
-      [".Gamestrip__StickyContainer"]
-    );
-
-    // 2) Commentary
-    await execInTab(tabId, enterCaptureModeHideSticky);
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: selectKeyEvents
-    });
-    await sleep(500);
-    setStatus("Capture in process... 2/4.");
-    const commShot = await captureSectionFull(
-      tabId,
-      locateLayout,
-      [".PageLayout__Main"]
-    );
-
-    // 3) Stats
-    await loadUrlInTab(tabId, stats);
-    await waitForTabComplete(tabId);
-    await sleep(timeBetweenNav);
-    await execInTab(tabId, enterCaptureModeHideSticky);
-    setStatus("Capture in process... 3/4.");
-    const statsShot = await captureSectionFull(
-      tabId,
-      locateLayout,
-      ["[data-testid='prism-LayoutCard']"]
-    );
-
-    // 4) Lineups
-    await loadUrlInTab(tabId, lineups);
-    await waitForTabComplete(tabId);
-    await sleep(timeBetweenNav);
-    await execInTab(tabId, enterCaptureModeHideSticky);
-    setStatus("Capture in process... 4/4.");
-    const lineShot = await captureSectionFull(
-      tabId,
-      locateLayout,
-      [".LineUps__BothTeams"]
-    );
-
-    await execInTab(tabId, exitCaptureModeHideSticky);
-    const unified = await combineImagesVertical([gameShot, commShot, statsShot, lineShot]);
-    await downloadDataUrl(unified, `espn_${gameId}_${stamp}.png`);
-
-    sendResponse({ ok: true });
   })().catch((e) => {
     console.error(e);
     sendResponse({ ok: false, error: e?.message || String(e) });
   });
 
-  // Keep message channel open for async response
   return true;
 });
-
